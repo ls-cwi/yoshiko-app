@@ -1,145 +1,109 @@
 package com.yoshiko.internal.model;
 
-import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.charset.Charset;
 
 public class YoshikoSocket {
 	private Socket socket = null;
-	private BufferedInputStream dm = null;
-	private DataInputStream din = null;
-	private DataOutputStream dout = null;
-	private readThread readth = null;
-	private boolean getflag = false;
-	private int getdata = 0;
-	private String outdata = null;
+	private InputStream din = null;
+	private OutputStream dout = null;
+	private int data_type = 0;
+	private byte[] data_payload = null;
 
-	public YoshikoSocket() {
-	}
-
-	public void connect(final String host, final int port) throws UnknownHostException, IOException {
-		int timeout = 100;
-		socket = new Socket();
-		do {
-			socket.connect(new InetSocketAddress(InetAddress.getByName(host), port), 500);
-			try {
-				Thread.sleep(500);
-			} catch (InterruptedException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-			if(timeout > 1) timeout--;
-			else return;
-		}while(!socket.isConnected());
-		dm = new BufferedInputStream(socket.getInputStream());
-		din = new DataInputStream(dm);
-		dout = new DataOutputStream(socket.getOutputStream());
-		readth = new readThread();
-		readth.start();
-	}
-
-	public void disconnect() throws IOException {
-		if (readth != null)
-			readth.close();
+	public YoshikoSocket(String host, int port) throws UnknownHostException, IOException {
 		try {
-			Thread.sleep(100);
-		} catch (InterruptedException e) {
+			socket = new Socket(host, port);
+		} catch (UnknownHostException e) {
 			// TODO Auto-generated catch block
-			e.printStackTrace();
+			throw new UnknownHostException("Socket UnknownHostException"+e.getMessage());
+			//e.printStackTrace();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			//e.printStackTrace();
+			throw new IOException("Socket IOException"+e.getMessage());
 		}
-		if (din != null) {
-			din.close();
-			din = null;
+		try {
+			din = socket.getInputStream();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			//e.printStackTrace();
+			throw new IOException("Socket getInputStream"+e.getMessage());
 		}
-		if (dm != null) {
-			dm.close();
-			dm = null;
+		try {
+			dout = socket.getOutputStream();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			//e.printStackTrace();
+			throw new IOException("Socket getOutputStream"+e.getMessage());
 		}
-		if (dout != null) {
-			dout.close();
-			dout = null;
+	}
+
+	
+	public void get_receive() throws IOException {
+		DataInputStream dataStream = new DataInputStream(din);
+		// read the type byte
+		int type = dataStream.read();
+		// read four bytes in big-endian byte order (network byte order)
+		// and interpret them as an int, the length of the payload
+		int payloadLength = dataStream.readInt();
+		// create a byte array to store the payload
+		byte[] payload = new byte[payloadLength];
+		// how many bytes of the payload have been read so far
+		int payloadBytesRead = 0;
+		// until all expected bytes are read
+		while (payloadBytesRead < payloadLength) {
+			// read up to `payloadLength - payloadBytesRead` bytes into
+			// the byte array, starting at `payload[payloadBytesRead]`. In
+			// other words, read the next part of the payload.
+			int newBytesRead = dataStream.read(
+					payload,
+					payloadBytesRead,
+					payloadLength - payloadBytesRead);
+			// if the end of the stream was encountered while reading
+			if (newBytesRead == -1) {
+				throw new EOFException("Incomplete response from server.");
+			}
+			payloadBytesRead += newBytesRead;
 		}
-		if (socket != null) {
-			socket.close();
-			socket = null;
-		}
+		data_type = type;
+		data_payload = payload;
 	}
 
 	public boolean SendCommand(int type, String name, String payload)
 			throws IOException {
-		getflag = false;
-		byte[] payloaddata = payload.getBytes();
-		byte[] namedata = name.getBytes();
-		int namelen = namedata.length;
-		int payloadlen = payloaddata.length;
-		dout.write((byte) type);
-		dout.writeInt(namelen);
-		if (namelen > 0) {
-			dout.write(namedata);
+		DataOutputStream dataStream = new DataOutputStream(dout);
+		dataStream.write((byte) type);
+		if(name != null) {
+			byte[] namedata = name.getBytes(Charset.forName("US-ASCII"));
+			dataStream.writeInt(namedata.length);
+			dataStream.write(namedata);
+		} else {
+			dataStream.writeInt(0);
 		}
-		dout.writeInt(payloadlen);
-		if (payloadlen > 0) {
-			dout.write(payloaddata);
+		if(payload != null) {
+			byte[] payloaddata = payload.getBytes(Charset.forName("US-ASCII"));
+			dataStream.writeInt(payloaddata.length);
+			dataStream.write(payloaddata);
+		} else {
+			dataStream.writeInt(0);
 		}
-		dout.flush();
-		while (getflag == false)
-			try {
-				Thread.sleep(10);
-			} catch (InterruptedException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-		if (getdata == 8)
+		dataStream.flush();
+		data_type = 0;
+		get_receive();
+		if (data_type == 8)
 			return true;
 		else
 			return false;
 	}
 
 	public String getOutData() {
-		return outdata;
-	}
-
-	private class readThread extends Thread {
-		private boolean running = true;
-		private byte[] read_buffer = new byte[1];
-		private int count = 0;
-
-		public void run() {
-			while (running) {
-				if (din != null) {
-					try {
-						count = din.read(read_buffer, 0, 1);
-						if (count > 0) {
-							getdata = read_buffer[0];
-							int len = din.readInt();
-							if (len > 0) {
-								byte[] buffer = new byte[len];
-								din.read(buffer, 0, len);
-								outdata = new String(buffer);
-							}
-							getflag = true;
-						}
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-				}
-				try {
-					Thread.sleep(10);
-				} catch (InterruptedException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-			}
-		}
-
-		public void close() {
-			running = false;
-		}
+		return new String(data_payload);
 	}
 }
